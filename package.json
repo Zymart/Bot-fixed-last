@@ -8,7 +8,8 @@
     "node": ">=18"
   },
   "scripts": {
-    "start": "node index_full.js",
+  "start": "node index.js"
+},
     "gen:powers": "node scripts/generate_powers.js",
     "lint": "echo \"no lint configured\""
   },
