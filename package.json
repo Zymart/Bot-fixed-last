@@ -2,13 +2,13 @@
   "name": "solo-leveling-discord-bot",
   "version": "1.0.0",
   "description": "Solo Leveling style Discord RPG bot (Railway-ready)",
-  "main": "index_full.js",
+  "main": "index.js",
   "type": "commonjs",
   "engines": {
     "node": ">=18"
   },
   "scripts": {
-    "start": "node index_full.js",
+    "start": "node index.js",
     "gen:powers": "node scripts/generate_powers.js",
     "lint": "echo \"no lint configured\""
   },
