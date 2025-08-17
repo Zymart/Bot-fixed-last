@@ -1,7 +1,12 @@
+// --- Keep-Alive Web Server for Railway/Heroku ---
 const express = require("express");
 const app = express();
+
 app.get("/", (req, res) => res.send("Bot is running!"));
-app.listen(process.env.PORT || 3000);
+app.listen(process.env.PORT || 3000, () => {
+  console.log("🌐 Web server running to keep bot alive.");
+});
+
 
 require('dotenv').config();
 const fs = require('fs');
