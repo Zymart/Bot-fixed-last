@@ -1,0 +1,74 @@
+
+// Generates data/powers.json with 120+ powers, 10 skills each
+const fs = require('fs');
+const path = require('path');
+
+const THEMES = [
+  ["Shadow", ["Shadow Slash","Night Veil","Umbral Step","Abyss Grasp","Blackout Burst","Wraith Call","Dark Spiral","Shade Bind","Cloak of Dusk","Eclipse Fang"]],
+  ["Ruler", ["Ruler's Hand","Command Seal","Gravity Press","Dominion Wave","Judgment Ray","Edict Shatter","Authority Crush","Sovereign Pulse","Ward of Kings","Absolution"]],
+  ["Monarch", ["Monarch's Wrath","Void Rend","Royal Decree","Crown Break","Oblivion Edge","Tyrant Roar","Dread Nova","Apex March","Throne Shock","Imperial Collapse"]],
+  ["Flame", ["Flame Burst","Inferno Wing","Cinder Lance","Blazing Rush","Firebrand","Ashen Spiral","Scorch Mark","Phoenix Rise","Ember Rain","Solar Spear"]],
+  ["Frost", ["Frost Spike","Glacier Wall","Winter's Bite","Crystal Shards","Hailstorm","Permafrost","Snowblind","Chill Step","Absolute Zero","Aurora Break"]],
+  ["Beast", ["Beast Claw","Feral Pounce","Alpha Howl","Rend","Predator Rush","Savage Leap","Blood Hunt","Thick Hide","Primal Roar","Wild Instincts"]],
+  ["Titan", ["Earth Shatter","Colossus Slam","Stone Guard","Tectonic Rumble","Seismic Hook","Granite Fist","Fault Break","Bedrock Bulwark","Titan's Grasp","Mountain Crash"]],
+  ["Arcane", ["Arcane Bolt","Mana Surge","Spellweave","Sigil Break","Mystic Chain","Mana Bloom","Arc Flash","Runic Guard","Flux Lance","Arc Sphere"]],
+  ["Celestial", ["Starfall","Radiant Spear","Cosmic Ward","Halo Burst","Sky Pierce","Comet Step","Ethereal Bind","Astral Echo","Lumen Flare","Solaris"]],
+  ["Abyssal", ["Abyss Gaze","Rift Scream","Nether Coil","Umbral Maw","Depth Charge","Grim Spiral","Hollow Step","Void Mote","Chasm Break","Stygian Wave"]],
+  ["Light", ["Light Lash","Prism Guard","Holy Nova","Searing Line","Gleam Step","Beacon Ward","Dawn Pierce","Refraction","Sanctify","Solar Edge"]],
+  ["Thunder", ["Thunder Snap","Storm Drive","Bolt Chain","Ion Surge","Static Guard","Tempest Dash","Arc Lash","Overcharge","Skybreaker","Resonance"]],
+  ["Wind", ["Gale Cut","Cyclone Step","Zephyr Guard","Vacuum Slice","Jetstream","Aero Dash","Storm Wall","Whirl Pierce","Typhoon Ring","Skyrend"]],
+  ["Water", ["Tide Lash","Aqua Spear","Surge Guard","Bubble Ward","Riptide","Maelstrom","Wave Step","Depth Shield","Cascade","Hydroburst"]],
+  ["Time", ["Time Slip","Delay Lock","Clock Rattle","Aging Touch","Epoch Break","Haste Field","Slow Field","Recall Step","Timelash","Chrono Crush"]],
+  ["Space", ["Blink","Spatial Line","Warp Guard","Fold Edge","Phase Step","Pocket Rend","Vector Shift","Anchor Seal","Portal Spike","Singularity"]],
+  ["Gravity", ["Grav Press","Event Crush","Orbit Ring","Mass Spike","Vortex","Well Step","Pull Chain","Tide Lock","Crush Zone","Falling Star"]],
+  ["Blood", ["Blood Lash","Hemorrhage","Sanguine Ward","Crimson Rush","Leech Bite","Pulse Break","Scarlet Veil","Bleed Out","Crimson Haze","Vampiric Edge"]],
+  ["Necro", ["Bone Shard","Rot Touch","Ghoul Call","Grave Bind","Corpse Lance","Tomb Guard","Soul Drain","Miasma","Coffin Step","Black Harvest"]],
+  ["Holy", ["Smite","Aegis","Consecrate","Divine Pierce","Vow of Light","Hallowed Step","Purge","Ward of Grace","Sanctuary","Heavenfall"]],
+  ["Metal", ["Steel Slash","Iron Guard","Alloy Spike","Magnet Pull","Plate Wall","Quench","Temper Edge","Lattice Bind","Golem Step","Anvil Drop"]],
+  ["Poison", ["Toxic Lash","Acid Jet","Venom Cloud","Septic Cut","Noxious Wave","Corrode","Paralyze","Viper Step","Spore Burst","Toxin Nova"]],
+  ["Nature", ["Vine Lash","Thorn Shot","Bloom Guard","Barkskin","Seed Burst","Grove Step","Petal Storm","Root Bind","Verdant Wave","Wild Growth"]],
+  ["Psychic", ["Mind Lance","Kinetic Push","Mind Shackle","Pulse Veil","Clair Step","Brainstorm","Psi Crush","Resolve Break","Echo Field","Synapse"]],
+  ["Illusion", ["Mirage","Faint Step","Veil Wall","Afterimage","Glamour","Mind Mirror","Fake Path","Smoke Veil","Daze","Hollow Image"]],
+  ["Sand", ["Sand Slash","Dune Wall","Glass Shard","Quicksand","Sirocco","Dust Devil","Burrow","Grain Shot","Sand Bind","Desert Lance"]],
+  ["Lunar", ["Moon Edge","Crescent Guard","Lunar Step","Tidal Pull","Moonlight Veil","Night Bloom","Waxing Fang","Waning Rush","Eclipse Cut","Tidefall"]],
+  ["Solar", ["Sunray","Corona Guard","Flare Step","Solar Brand","Daybreak","Radiance","Helios Bolt","Flare Wall","Sun Disc","Zenith"]],
+  ["Storm", ["Gust Lance","Cloudburst","Torrent Guard","Stormveil","Downburst","Gale Ride","Thunderclap","Rainblade","Storm Bind","Tempest"]]
+];
+
+// Expand to 120+ by combining adjectives
+const ADJ = ["Ancient","Prime","Eternal","Feral","Arc","True","Royal","Apex","Silent","Crimson","Azure","Ivory","Onyx","Golden","Violet","Umbral","Radiant","Grim","Sable","Mythic"];
+let powers = {};
+
+function makeSkills(baseList) {
+  // Ensure exactly 10 unique names
+  const names = baseList.slice(0,10);
+  return names.map((n,i)=> ({
+    name: n,
+    levelReq: 1 + i*5,
+    powerMult: 1 + i*0.12,
+    cooldown: Math.max(1, Math.floor(i/2)+1),
+    description: n
+  }));
+}
+
+let count = 0;
+for (const [core, baseSkills] of THEMES) {
+  for (const adj of ADJ) {
+    const key = `${adj} ${core}`;
+    if (powers[key]) continue;
+    powers[key] = {
+      tierHint: ["Common","Rare","Epic","Legendary","Mythic"][Math.min(4, Math.floor(Math.random()*5))],
+      type: core.toLowerCase(),
+      description: `${adj} ${core} power.`,
+      skills: makeSkills(baseSkills)
+    };
+    count++;
+    if (count >= 120) break;
+  }
+  if (count >= 120) break;
+}
+
+// Save file
+const outPath = path.join(__dirname, "..", "data", "powers.json");
+fs.writeFileSync(outPath, JSON.stringify(powers, null, 2), "utf8");
+console.log("Generated powers:", Object.keys(powers).length);
