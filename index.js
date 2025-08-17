@@ -1,4 +1,3 @@
-
 require('dotenv').config();
 const fs = require('fs');
 const path = require('path');
@@ -12,6 +11,8 @@ const TOKEN = process.env.DISCORD_TOKEN || process.env.TOKEN || "";
 const PREFIX = process.env.PREFIX || "!";
 const OWNER_ID = process.env.OWNER_ID || "730629579533844512";
 const SPAWN_CHANNEL_ID = process.env.SPAWN_CHANNEL_ID || "";
+const PORTAL_MIN_MS = Number(process.env.PORTAL_MIN_MS || 5*60*1000); // 5 min
+const PORTAL_MAX_MS = Number(process.env.PORTAL_MAX_MS || 10*60*1000); // 10 min
 
 const DATA_DIR = path.join(__dirname, "data");
 const USERS_FILE = path.join(DATA_DIR, "users.json");
@@ -56,6 +57,7 @@ const client = new Client({
 
 client.once(Events.ClientReady, (c)=>{
   console.log(`✅ Logged in as ${c.user.tag} | Prefix: ${PREFIX}`);
+  scheduleNextPortal();
 });
 
 // ------------ Helpers ------------
@@ -90,8 +92,7 @@ function addItem(u, key, qty=1){ u.inv ||= {}; u.inv[key]=(u.inv[key]||0)+qty; }
 function takeItem(u, key, qty=1){
   u.inv ||= {};
   if ((u.inv[key]||0)<qty) return false;
-  u.inv[key]-=qty; if (u.inv[key]<=0) delete u.inv[key]; return true;
-}
+  u.inv[key]-=qty; if (u.inv[key]<=0) delete u.inv[key]; return true; }
 function invToString(u){
   const inv = u.inv||{}; const keys = Object.keys(inv);
   if (!keys.length) return "_empty_";
@@ -100,7 +101,6 @@ function invToString(u){
 
 // Active battles map
 const battles = new Map(); // key: channelId:userId
-
 function battleKey(chId, uid){ return `${chId}:${uid}`; }
 
 async function renderBattle(channel, user, b, headline){
@@ -144,7 +144,6 @@ async function renderBattle(channel, user, b, headline){
 }
 
 async function endBattleReplace(b, channel, text){
-  // Remove buttons, replace message with results
   if (b.msg) {
     try { await b.msg.edit({ components:[] }); } catch {}
   }
@@ -164,6 +163,78 @@ async function enemyTurn(ix, u, b){
   }
   b.turn="player";
   return renderBattle(ix.channel, u, b, `**${b.enemy.name}** hits you for **${dmg}**.`);
+}
+
+// ------------ Portal System ------------
+const portals = new Map(); // key: messageId -> portal object
+let portalTimeout = null;
+
+function randomDelay(){
+  const span = Math.max(1000, PORTAL_MAX_MS - PORTAL_MIN_MS);
+  return PORTAL_MIN_MS + Math.floor(Math.random()*span);
+}
+
+function genPortal(){
+  // Rarity affects rewards & enemy
+  const roll = Math.random();
+  const rarity = roll>0.97? 'Mythic' : roll>0.9? 'Legendary' : roll>0.7? 'Epic' : roll>0.4? 'Rare' : 'Common';
+  const colorMap = { Common:0x95a5a6, Rare:0x3498db, Epic:0x9b59b6, Legendary:0xf1c40f, Mythic:0xe67e22 };
+  const enemyNames = {
+    Common:["Goblin Scout","Wild Boar","Skeleton"],
+    Rare:["Orc Raider","Shade Stalker","Lizard Knight"],
+    Epic:["Frost Wraith","Stone Golem","Flame Revenant"],
+    Legendary:["Hydra Spawn","Dread Knight","Abyss Sorcerer"],
+    Mythic:["Ancient Dragonling","Archfiend Shade"]
+  };
+  const name = `${rarity} Portal`;
+  const enemy = {
+    name: enemyNames[rarity][Math.floor(Math.random()*enemyNames[rarity].length)],
+    power: rarity
+  };
+  const lifetime = 3*60*1000; // 3 minutes to enter
+  return { id: Math.random().toString(36).slice(2,8), rarity, color: colorMap[rarity], name, enemy, createdAt:Date.now(), expiresAt:Date.now()+lifetime, entrants:new Set(), messageId:null, channelId:null };
+}
+
+async function spawnPortal(channel){
+  const p = genPortal();
+  const emb = new EmbedBuilder()
+    .setTitle(`🌀 ${p.name}`)
+    .setColor(p.color)
+    .setDescription([`A spatial rift has opened!`, `Enemy sign: **${p.enemy.name}**`, "\nClick **Enter Portal** to challenge."].join("\n"))
+    .setFooter({ text:`Closes in 3 minutes • ID ${p.id}` });
+  const row = new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId(`portal:enter:${p.id}`).setLabel('Enter Portal').setStyle(ButtonStyle.Primary),
+    new ButtonBuilder().setCustomId(`portal:info:${p.id}`).setLabel('Info').setStyle(ButtonStyle.Secondary)
+  );
+  const msg = await channel.send({ embeds:[emb], components:[row] });
+  p.messageId = msg.id; p.channelId = channel.id; portals.set(p.id, p);
+
+  // auto close
+  setTimeout(async ()=>{
+    const cur = portals.get(p.id);
+    if (!cur) return;
+    portals.delete(p.id);
+    try { await msg.edit({ components:[] }); } catch {}
+    const closed = new EmbedBuilder().setTitle(`🌀 ${p.name} closed`).setColor(0x95a5a6).setDescription("The rift has stabilized and vanished.");
+    channel.send({ embeds:[closed] });
+  }, p.expiresAt - Date.now());
+}
+
+function scheduleNextPortal(){
+  if (portalTimeout) clearTimeout(portalTimeout);
+  if (!SPAWN_CHANNEL_ID){
+    console.log('ℹ️ No SPAWN_CHANNEL_ID set; portal auto-spawn disabled.');
+    return;
+  }
+  const delay = randomDelay();
+  portalTimeout = setTimeout(async ()=>{
+    try {
+      const ch = await client.channels.fetch(SPAWN_CHANNEL_ID);
+      if (ch) await spawnPortal(ch);
+    } catch(err){ console.error('Portal spawn failed', err); }
+    finally { scheduleNextPortal(); }
+  }, delay);
+  console.log(`⏳ Next portal in ~${Math.round(delay/60000)} min`);
 }
 
 // ------------ Commands ------------
@@ -195,13 +266,21 @@ client.on(Events.MessageCreate, async (msg)=>{
         "`!battle` — start a battle",
         "`!encounter` — quick battle (CD 45s)",
         "",
-        "**Inventory**",
+        "**Portals**",
+        "`!portals` — list active portals",
+        "`!portal` — (owner) spawn a portal now",
+        "",
+        "**Inventory & Trading**",
         "`!inv` — show items",
         "`!use <item>` — use item",
+        "`!offer @user <item> <qty> <gold>` — offer item(s) for gold",
+        "`!canceloffer` — cancel your pending offer",
         "",
         "**Admin**",
         "`!resetuser <@user>` — reset a user (owner only)",
         "`!setspawn #channel` — set portal spawn channel",
+        "`!giveexp <@user> <amount>` — add EXP (owner)",
+        "`!givegold <@user> <amount>` — add Gold (owner)",
       ].join("\n"));
     return msg.channel.send({ embeds:[emb] });
   }
@@ -211,7 +290,6 @@ client.on(Events.MessageCreate, async (msg)=>{
     if (u.power) return msg.reply("Already awakened.");
     const p = pickRandomPower();
     if (!p) return msg.reply("No powers available. Please generate `data/powers.json`.");
-    // attach selected power
     u.power = { name:p.name, type:p.type, description:p.description, skills:p.skills };
     saveUsers(users);
     const emb = new EmbedBuilder()
@@ -302,7 +380,53 @@ client.on(Events.MessageCreate, async (msg)=>{
     return msg.channel.send(`Used **${key}**.`);
   }
 
-  // Admin
+  // --- Portal Commands ---
+  if (cmd === 'portals'){
+    if (!portals.size) return msg.reply('No active portals.');
+    const lines = [...portals.values()].map(p=>`• **${p.name}** in <#${p.channelId}> — closes in ${fmtMs(p.expiresAt-Date.now())} (ID: ${p.id})`);
+    const emb = new EmbedBuilder().setTitle('🌀 Active Portals').setColor(0x3498db).setDescription(lines.join('\n'));
+    return msg.channel.send({ embeds:[emb] });
+  }
+
+  if (cmd === 'portal'){
+    if (!isOwner) return msg.reply('Owner only.');
+    const ch = msg.mentions.channels.first() || msg.channel;
+    await spawnPortal(ch);
+    return msg.react('🌀');
+  }
+
+  // --- Trading Commands ---
+  if (cmd === 'offer'){
+    const target = msg.mentions.users.first();
+    if (!target) return msg.reply('Usage: `!offer @user <item> <qty> <gold>`');
+    const u = getUser(msg.author.id, msg.author.username);
+    const t = getUser(target.id, target.username);
+    const [item, qtyStr, goldStr] = args.slice(1);
+    const qty = Math.max(1, parseInt(qtyStr||'1'));
+    const gold = Math.max(0, parseInt(goldStr||'0'));
+    if (!item) return msg.reply('Please provide an item name.');
+    if ((u.inv?.[item]||0) < qty) return msg.reply(`You don't have enough **${item}**.`);
+
+    const emb = new EmbedBuilder()
+      .setTitle('🤝 Trade Offer')
+      .setColor(0x2ecc71)
+      .setDescription(`${msg.author} offers **${qty}x ${item}** to ${target} for **${gold} Gold**.`)
+      .setFooter({ text:'Offer expires in 60s' });
+    const row = new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId(`trade:accept:${msg.author.id}:${target.id}:${item}:${qty}:${gold}`).setLabel('Accept').setStyle(ButtonStyle.Success),
+      new ButtonBuilder().setCustomId(`trade:decline:${msg.author.id}:${target.id}`).setLabel('Decline').setStyle(ButtonStyle.Danger)
+    );
+    const offerMsg = await msg.channel.send({ embeds:[emb], components:[row] });
+    setTimeout(()=>{ try{ offerMsg.edit({ components:[] }); }catch{} }, 60*1000);
+    return;
+  }
+
+  if (cmd === 'canceloffer'){
+    // This is a lightweight demo; offers are tied to the message and expire in 60s, so nothing to cancel persistently.
+    return msg.reply('Recent offers auto-expire in 60 seconds. Create a new one if needed.');
+  }
+
+  // --- Admin ---
   if (cmd === "resetuser"){
     if (!isOwner) return msg.reply("Owner only.");
     const mentioned = msg.mentions.users.first();
@@ -324,64 +448,153 @@ client.on(Events.MessageCreate, async (msg)=>{
     process.env.SPAWN_CHANNEL_ID = ch.id;
     return msg.channel.send(`✅ Spawn channel set to ${ch}. (Persist this in your .env as SPAWN_CHANNEL_ID=${ch.id})`);
   }
+
+  if (cmd === 'giveexp'){
+    if (!isOwner) return msg.reply('Owner only.');
+    const target = msg.mentions.users.first();
+    const amount = parseInt(args[1]||'0');
+    if (!target || !amount) return msg.reply('Usage: `!giveexp @user <amount>`');
+    const u = getUser(target.id, target.username);
+    u.exp += amount;
+    while (u.exp >= u.level*100){ u.exp -= u.level*100; u.level++; }
+    saveUsers(users);
+    return msg.channel.send(`✅ Gave **${amount} EXP** to <@${target.id}> (Lv ${u.level}).`);
+  }
+
+  if (cmd === 'givegold'){
+    if (!isOwner) return msg.reply('Owner only.');
+    const target = msg.mentions.users.first();
+    const amount = parseInt(args[1]||'0');
+    if (!target || !amount) return msg.reply('Usage: `!givegold @user <amount>`');
+    const u = getUser(target.id, target.username);
+    u.gold = (u.gold||0) + amount;
+    saveUsers(users);
+    return msg.channel.send(`✅ Gave **${amount} Gold** to <@${target.id}> (now ${u.gold}).`);
+  }
 });
 
 // Button interactions
 client.on(Events.InteractionCreate, async (ix)=>{
   if (!ix.isButton()) return;
-  const [scope, action, targetId, extra] = ix.customId.split(":");
-  if (scope !== "battle") return;
+  const parts = ix.customId.split(":");
+  const scope = parts[0];
 
-  const key = battleKey(ix.channel.id, targetId);
-  const b = battles.get(key);
-  const u = users.find(x=>x.userId===targetId);
-  if (!b || !u) return ix.reply({ content:"No active battle.", ephemeral:true });
-  if (ix.user.id !== targetId) return ix.reply({ content:"This battle isn't yours.", ephemeral:true });
-  if (b.turn!=="player" && action!=="prev" && action!=="next") return ix.reply({ content:"Not your turn.", ephemeral:true });
+  // --- Battle buttons ---
+  if (scope === 'battle'){
+    const [_, action, targetId, extra] = parts;
+    const key = battleKey(ix.channel.id, targetId);
+    const b = battles.get(key);
+    const u = users.find(x=>x.userId===targetId);
+    if (!b || !u) return ix.reply({ content:"No active battle.", ephemeral:true });
+    if (ix.user.id !== targetId) return ix.reply({ content:"This battle isn't yours.", ephemeral:true });
+    if (b.turn!=="player" && action!=="prev" && action!=="next") return ix.reply({ content:"Not your turn.", ephemeral:true });
 
-  if (action==="prev"){ b.page=Math.max(0,b.page-1); await ix.deferUpdate(); return renderBattle(ix.channel, u, b, "Page changed."); }
-  if (action==="next"){ b.page+=1; await ix.deferUpdate(); return renderBattle(ix.channel, u, b, "Page changed."); }
-  if (action==="flee"){
-    battles.delete(key);
-    try { await b.msg.edit({ components:[] }); } catch {}
-    return ix.reply({ content:"You fled the battle.", ephemeral:false });
+    if (action==="prev"){ b.page=Math.max(0,b.page-1); await ix.deferUpdate(); return renderBattle(ix.channel, u, b, "Page changed."); }
+    if (action==="next"){ b.page+=1; await ix.deferUpdate(); return renderBattle(ix.channel, u, b, "Page changed."); }
+    if (action==="flee"){
+      battles.delete(key);
+      try { await b.msg.edit({ components:[] }); } catch {}
+      return ix.reply({ content:"You fled the battle.", ephemeral:false });
+    }
+
+    if (action==="attack"){
+      const dmg = Math.max(1, Math.floor(pATK(u)*(0.9+Math.random()*0.25)));
+      b.enemy.hp = Math.max(0, b.enemy.hp - dmg);
+      if (b.enemy.hp<=0){
+        battles.delete(key);
+        const exp = 80 + Math.floor(Math.random()*40);
+        const gold = 30 + Math.floor(Math.random()*20);
+        u.exp += exp; u.gold = (u.gold||0)+gold;
+        while (u.exp >= u.level*100){ u.exp -= u.level*100; u.level++; }
+        saveUsers(users);
+        await ix.deferUpdate();
+        return endBattleReplace(b, ix.channel, `**Victory!** You dealt the finishing blow.\nRewards: **+${exp} EXP**, **+${gold} Gold**`);
+      }
+      b.turn="enemy"; await ix.deferUpdate();
+      await renderBattle(ix.channel, u, b, `You strike for **${dmg}**.`);
+      return enemyTurn(ix, u, b);
+    }
+
+    if (action==="skill"){
+      const sName = parts.slice(3).join(":"); // support colons in names just in case
+      const dmg = dmgForSkill(u, sName);
+      b.enemy.hp = Math.max(0, b.enemy.hp - dmg);
+      if (b.enemy.hp<=0){
+        battles.delete(key);
+        const exp = 90 + Math.floor(Math.random()*50);
+        const gold = 35 + Math.floor(Math.random()*25);
+        u.exp += exp; u.gold = (u.gold||0)+gold;
+        while (u.exp >= u.level*100){ u.exp -= u.level*100; u.level++; }
+        saveUsers(users);
+        await ix.deferUpdate();
+        return endBattleReplace(b, ix.channel, `**Victory!** You cast **${sName}** for **${dmg}**.\nRewards: **+${exp} EXP**, **+${gold} Gold**`);
+      }
+      b.turn="enemy"; await ix.deferUpdate();
+      await renderBattle(ix.channel, u, b, `You cast **${sName}** for **${dmg}**.`);
+      return enemyTurn(ix, u, b);
+    }
+    return;
   }
 
-  if (action==="attack"){
-    const dmg = Math.max(1, Math.floor(pATK(u)*(0.9+Math.random()*0.25)));
-    b.enemy.hp = Math.max(0, b.enemy.hp - dmg);
-    if (b.enemy.hp<=0){
-      battles.delete(key);
-      const exp = 80 + Math.floor(Math.random()*40);
-      const gold = 30 + Math.floor(Math.random()*20);
-      u.exp += exp; u.gold = (u.gold||0)+gold;
-      while (u.exp >= u.level*100){ u.exp -= u.level*100; u.level++; }
-      saveUsers(users);
-      await ix.deferUpdate();
-      return endBattleReplace(b, ix.channel, `**Victory!** You dealt the finishing blow.\nRewards: **+${exp} EXP**, **+${gold} Gold**`);
+  // --- Portal buttons ---
+  if (scope === 'portal'){
+    const [_, action, portalId] = parts;
+    const p = portals.get(portalId);
+    if (!p) return ix.reply({ content:'This portal has closed or is invalid.', ephemeral:true });
+
+    if (action === 'info'){
+      const left = Math.max(0, p.expiresAt - Date.now());
+      return ix.reply({ content:`Rarity: ${p.rarity} • Enemy: ${p.enemy.name} • Closes in ${fmtMs(left)}`, ephemeral:true });
     }
-    b.turn="enemy"; await ix.deferUpdate();
-    await renderBattle(ix.channel, u, b, `You strike for **${dmg}**.`);
-    return enemyTurn(ix, u, b);
+
+    if (action === 'enter'){
+      const u = getUser(ix.user.id, ix.user.username);
+      if (!u.power) return ix.reply({ content:'Awaken first with `!register`.', ephemeral:true });
+      const key = battleKey(ix.channel.id, u.userId);
+      if (battles.has(key)) return ix.reply({ content:'You already have an active battle in this channel.', ephemeral:true });
+
+      // Scale by rarity
+      const rarMult = { Common:1.0, Rare:1.2, Epic:1.5, Legendary:2.0, Mythic:2.8 }[p.rarity] || 1.0;
+      const enemy = {
+        name: p.enemy.name,
+        maxHp: Math.floor((100 + u.level*60) * rarMult),
+        atk: Math.floor((12 + u.level*9) * rarMult),
+        hp: 0
+      };
+      enemy.hp = enemy.maxHp;
+      const b = { channelId: ix.channel.id, userId: u.userId, hp: pMaxHP(u), maxHp: pMaxHP(u), enemy, turn:'player', page:0, msg:null };
+      battles.set(key, b);
+      await ix.deferUpdate();
+      return renderBattle(ix.channel, u, b, `You step into the **${p.rarity}** portal...`);
+    }
+    return;
   }
 
-  if (action==="skill"){
-    const sName = extra;
-    const dmg = dmgForSkill(u, sName);
-    b.enemy.hp = Math.max(0, b.enemy.hp - dmg);
-    if (b.enemy.hp<=0){
-      battles.delete(key);
-      const exp = 90 + Math.floor(Math.random()*50);
-      const gold = 35 + Math.floor(Math.random()*25);
-      u.exp += exp; u.gold = (u.gold||0)+gold;
-      while (u.exp >= u.level*100){ u.exp -= u.level*100; u.level++; }
-      saveUsers(users);
-      await ix.deferUpdate();
-      return endBattleReplace(b, ix.channel, `**Victory!** You cast **${sName}** for **${dmg}**.\nRewards: **+${exp} EXP**, **+${gold} Gold**`);
+  // --- Trade buttons ---
+  if (scope === 'trade'){
+    const [_, action, fromId, toId, item, qtyStr, goldStr] = parts;
+    if (action === 'decline'){
+      if (ix.user.id !== toId) return ix.reply({ content:'Only the recipient can decline.', ephemeral:true });
+      try { await ix.message.edit({ components:[] }); } catch{}
+      return ix.reply({ content:'Offer declined.', ephemeral:true });
     }
-    b.turn="enemy"; await ix.deferUpdate();
-    await renderBattle(ix.channel, u, b, `You cast **${sName}** for **${dmg}**.`);
-    return enemyTurn(ix, u, b);
+    if (action === 'accept'){
+      if (ix.user.id !== toId) return ix.reply({ content:'Only the recipient can accept.', ephemeral:true });
+      const qty = Math.max(1, parseInt(qtyStr||'1'));
+      const gold = Math.max(0, parseInt(goldStr||'0'));
+      const from = getUser(fromId, fromId);
+      const to = getUser(toId, toId);
+      if ((from.inv?.[item]||0) < qty) return ix.reply({ content:`Sender no longer has **${qty}x ${item}**.`, ephemeral:true });
+      if ((to.gold||0) < gold) return ix.reply({ content:`You don't have **${gold} Gold**.`, ephemeral:true });
+      // transfer
+      takeItem(from, item, qty);
+      addItem(to, item, qty);
+      from.gold = (from.gold||0) + gold;
+      to.gold = (to.gold||0) - gold;
+      saveUsers(users);
+      try { await ix.message.edit({ components:[] }); } catch{}
+      return ix.reply({ content:`✅ Trade completed: ${qty}x ${item} ⇄ ${gold} Gold.`, ephemeral:false });
+    }
   }
 });
 
@@ -389,5 +602,4 @@ if (!TOKEN) {
   console.log("❌ Missing token. Set DISCORD_TOKEN in .env");
 } else {
   client.login(TOKEN);
-    }
-    
+}
