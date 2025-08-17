@@ -8,13 +8,13 @@
     "node": ">=18"
   },
   "scripts": {
-  "start": "node index.js",
+    "start": "node index_full.js",
     "gen:powers": "node scripts/generate_powers.js",
     "lint": "echo \"no lint configured\""
-  }
+  },
   "dependencies": {
     "discord.js": "^14.15.3",
     "dotenv": "^16.4.5",
     "express": "^4.19.2"
   }
-
+}
